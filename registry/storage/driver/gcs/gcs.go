@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"sort"
@@ -33,6 +34,7 @@ import (
 	"golang.org/x/oauth2/google"
 
 	"google.golang.org/api/googleapi"
+	storage "google.golang.org/api/storage/v1"
 	"google.golang.org/cloud"
 	gcs "google.golang.org/cloud/storage"
 
@@ -232,6 +234,118 @@ func (d *driver) WriteStream(context ctx.Context, path string, offset int64, rea
 		return 0, storagedriver.InvalidOffsetError{Path: path, Offset: offset}
 	}
 
+	if offset == 0 {
+		return d.writeCompletely(context, path, 0, reader)
+	}
+
+	service, err := storage.New(d.client)
+	if err != nil {
+		return 0, err
+	}
+	objService := storage.NewObjectsService(service)
+	var obj *storage.Object
+	err = retry(func() error {
+		o, err := objService.Get(d.bucket, d.pathToKey(path)).Do()
+		obj = o
+		return err
+	})
+	//	obj, err := retry(objService.Get(d.bucket, d.pathToKey(path)).Do)
+	if err != nil {
+		return 0, err
+	}
+
+	// cannot append more chunks, so redo from scratch
+	if obj.ComponentCount >= 1023 {
+		return d.writeCompletely(context, path, offset, reader)
+	}
+
+	// skip from reader
+	objSize := int64(obj.Size)
+	nn, err := skip(reader, objSize-offset)
+	if err != nil {
+		return nn, err
+	}
+
+	// Size <= offset
+	partName := fmt.Sprintf("%v#part-%d#", d.pathToKey(path), obj.ComponentCount)
+	gcsContext := d.context(context)
+	wc := gcs.NewWriter(gcsContext, d.bucket, partName)
+	wc.ContentType = "application/octet-stream"
+
+	defer wc.Close()
+	defer gcs.DeleteObject(gcsContext, d.bucket, partName)
+
+	if objSize < offset {
+		err = writeZeros(wc, offset-objSize)
+		if err != nil {
+			return nn, err
+		}
+	}
+	n, err := io.Copy(wc, reader)
+	if err != nil {
+		return nn, err
+	}
+	err = wc.Close()
+	if err != nil {
+		return nn, err
+	}
+
+	req := &storage.ComposeRequest{
+		Destination: &storage.Object{Bucket: obj.Bucket, Name: obj.Name, ContentType: obj.ContentType},
+		SourceObjects: []*storage.ComposeRequestSourceObjects{
+			{
+				Name:       obj.Name,
+				Generation: obj.Generation,
+			}, {
+				Name:       partName,
+				Generation: wc.Object().Generation,
+			}},
+	}
+
+	err = retry(func() error { _, err := objService.Compose(d.bucket, obj.Name, req).Do(); return err })
+	if err == nil {
+		nn = nn + n
+	}
+
+	// TODO handle rateLimitExceeded errors (HTTP status 429)
+	// "errors":[
+	//     {
+	//         "domain":"usageLimits",
+	//         "reason":"rateLimitExceeded",
+	//         "message":"The total number of compose requests for this bucket's project exceeds the rate limit.
+	//                    Please reduce the rate of compose requests."
+	//     }
+	// ],
+	// "code":429,
+
+	return nn, err
+}
+
+type request func() error
+
+func retry(req request) error {
+	backoff := time.Second
+	var err error
+	for i := 0; i < 10; i++ {
+		err := req()
+		if err == nil {
+			return nil
+		}
+
+		status := err.(*googleapi.Error)
+		if status == nil || (status.Code != 429 && status.Code < http.StatusInternalServerError) {
+			return err
+		}
+
+		time.Sleep(backoff + (time.Duration(rand.Int31n(1000)) * time.Millisecond))
+		if i <= 4 {
+			backoff = backoff * 2
+		}
+	}
+	return err
+}
+
+func (d *driver) writeCompletely(context ctx.Context, path string, offset int64, reader io.Reader) (totalRead int64, err error) {
 	wc := gcs.NewWriter(d.context(context), d.bucket, d.pathToKey(path))
 	wc.ContentType = "application/octet-stream"
 	defer wc.Close()
@@ -253,6 +367,13 @@ func (d *driver) WriteStream(context ctx.Context, path string, offset int64, rea
 		}
 	}
 	return io.Copy(wc, reader)
+}
+
+func skip(reader io.Reader, count int64) (int64, error) {
+	if count <= 0 {
+		return 0, nil
+	}
+	return io.CopyN(ioutil.Discard, reader, count)
 }
 
 func writeZeros(wc io.Writer, count int64) error {
@@ -333,8 +454,11 @@ func (d *driver) List(context ctx.Context, path string) ([]string, error) {
 			// so filter out any objects with a non-zero time-deleted
 			if object.Deleted.IsZero() {
 				name := object.Name
-				name = d.keyToPath(name)
-				list = append(list, name)
+				// Ignore objects with names that end with '#' (these are uploaded parts)
+				if name[len(name)-1] != '#' {
+					name = d.keyToPath(name)
+					list = append(list, name)
+				}
 			}
 		}
 		for _, subpath := range objects.Prefixes {
