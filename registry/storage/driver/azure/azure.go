@@ -174,6 +174,12 @@ func (d *driver) WriteStream(ctx context.Context, path string, offset int64, rea
 	return zw.Write(d.container, path, offset, reader)
 }
 
+// CloseStream signals the driver after the last chunk of data has been written
+// by WriteStream.
+func (d *driver) CloseStream(ctx context.Context, path string) error {
+	return nil
+}
+
 // Stat retrieves the FileInfo for the given path, including the current size
 // in bytes and the creation time.
 func (d *driver) Stat(ctx context.Context, path string) (storagedriver.FileInfo, error) {

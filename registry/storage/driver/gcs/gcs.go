@@ -383,6 +383,12 @@ func writeZeros(wc io.Writer, count int64) error {
 	return nil
 }
 
+// CloseStream signals the driver after the last chunk of data has been written
+// by WriteStream.
+func (d *driver) CloseStream(context ctx.Context, path string) error {
+	return nil
+}
+
 // Stat retrieves the FileInfo for the given path, including the current
 // size in bytes and the creation time.
 func (d *driver) Stat(context ctx.Context, path string) (storagedriver.FileInfo, error) {

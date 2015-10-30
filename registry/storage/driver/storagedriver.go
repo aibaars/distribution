@@ -60,6 +60,10 @@ type StorageDriver interface {
 	// The offset must be no larger than the CurrentSize for this path.
 	WriteStream(ctx context.Context, path string, offset int64, reader io.Reader) (nn int64, err error)
 
+	// CloseStream signals the driver after the last chunk of data has been written
+	// by WriteStream.
+	CloseStream(ctx context.Context, path string) error
+
 	// Stat retrieves the FileInfo for the given path, including the current
 	// size in bytes and the creation time.
 	Stat(ctx context.Context, path string) (FileInfo, error)

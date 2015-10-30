@@ -167,6 +167,12 @@ func (d *driver) WriteStream(ctx context.Context, path string, offset int64, rea
 	return nn, err
 }
 
+// CloseStream signals the driver after the last chunk of data has been written
+// by WriteStream.
+func (d *driver) CloseStream(ctx context.Context, path string) error {
+	return nil
+}
+
 // Stat returns info about the provided path.
 func (d *driver) Stat(ctx context.Context, path string) (storagedriver.FileInfo, error) {
 	d.mutex.RLock()

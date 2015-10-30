@@ -170,6 +170,10 @@ func (fw *fileWriter) Seek(offset int64, whence int) (int64, error) {
 // return a nil error. Calling it subsequent times will
 // detect that fw.err has been set and will return the error.
 func (fw *fileWriter) Close() error {
+	err := fw.driver.CloseStream(fw.ctx, fw.path)
+	if err != nil && fw.err == nil {
+		fw.err = err
+	}
 	if fw.err != nil {
 		return fw.err
 	}
