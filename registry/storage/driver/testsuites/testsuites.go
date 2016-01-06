@@ -414,10 +414,6 @@ func (suite *DriverSuite) testContinueStreamAppend(c *check.C, chunkSize int64) 
 	c.Assert(err, check.IsNil)
 	c.Assert(nn, check.Equals, int64(len(fullContents[fi.Size():])))
 
-	received, err := suite.StorageDriver.GetContent(suite.ctx, filename)
-	c.Assert(err, check.IsNil)
-	c.Assert(received, check.DeepEquals, fullContents)
-
 	// Writing past size of file extends file (no offset error). We would like
 	// to write chunk 4 one chunk length past chunk 3. It should be successful
 	// and the resulting file will be 5 chunks long, with a chunk of all
@@ -435,13 +431,6 @@ func (suite *DriverSuite) testContinueStreamAppend(c *check.C, chunkSize int64) 
 	c.Assert(fi, check.NotNil)
 	c.Assert(fi.Size(), check.Equals, int64(len(fullContents)))
 
-	received, err = suite.StorageDriver.GetContent(suite.ctx, filename)
-	c.Assert(err, check.IsNil)
-	c.Assert(len(received), check.Equals, len(fullContents))
-	c.Assert(received[chunkSize*3:chunkSize*4], check.DeepEquals, zeroChunk)
-	c.Assert(received[chunkSize*4:chunkSize*5], check.DeepEquals, contentsChunk4)
-	c.Assert(received, check.DeepEquals, fullContents)
-
 	// Ensure that negative offsets return correct error.
 	nn, err = suite.StorageDriver.WriteStream(suite.ctx, filename, -1, bytes.NewReader(zeroChunk))
 	c.Assert(err, check.NotNil)
@@ -449,6 +438,17 @@ func (suite *DriverSuite) testContinueStreamAppend(c *check.C, chunkSize int64) 
 	c.Assert(err.(storagedriver.InvalidOffsetError).Path, check.Equals, filename)
 	c.Assert(err.(storagedriver.InvalidOffsetError).Offset, check.Equals, int64(-1))
 	c.Assert(strings.Contains(err.Error(), suite.Name()), check.Equals, true)
+
+	err = suite.StorageDriver.CloseStream(suite.ctx, filename)
+	c.Assert(err, check.IsNil)
+
+	received, err := suite.StorageDriver.GetContent(suite.ctx, filename)
+	c.Assert(err, check.IsNil)
+	c.Assert(len(received), check.Equals, len(fullContents))
+	c.Assert(received[chunkSize*3:chunkSize*4], check.DeepEquals, zeroChunk)
+	c.Assert(received[chunkSize*4:chunkSize*5], check.DeepEquals, contentsChunk4)
+	c.Assert(received, check.DeepEquals, fullContents)
+
 }
 
 // TestReadNonexistentStream tests that reading a stream for a nonexistent path
@@ -1069,6 +1069,9 @@ func (suite *DriverSuite) testFileStreams(c *check.C, size int64) {
 	c.Assert(err, check.IsNil)
 	c.Assert(nn, check.Equals, size)
 
+	err = suite.StorageDriver.CloseStream(suite.ctx, filename)
+	c.Assert(err, check.IsNil)
+
 	reader, err := suite.StorageDriver.ReadStream(suite.ctx, filename, 0)
 	c.Assert(err, check.IsNil)
 	defer reader.Close()
@@ -1097,6 +1100,9 @@ func (suite *DriverSuite) writeReadCompareStreams(c *check.C, filename string, c
 	nn, err := suite.StorageDriver.WriteStream(suite.ctx, filename, 0, bytes.NewReader(contents))
 	c.Assert(err, check.IsNil)
 	c.Assert(nn, check.Equals, int64(len(contents)))
+
+	err = suite.StorageDriver.CloseStream(suite.ctx, filename)
+	c.Assert(err, check.IsNil)
 
 	reader, err := suite.StorageDriver.ReadStream(suite.ctx, filename, 0)
 	c.Assert(err, check.IsNil)
