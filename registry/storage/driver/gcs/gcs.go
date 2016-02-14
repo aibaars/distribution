@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -48,7 +49,7 @@ const (
 
 	uploadSessionContentType = "application/x-docker-upload-session"
 	minChunkSize             = 256 * 1024
-	maxChunkSize             = 20 * minChunkSize
+	defaultChunkSize         = 20 * minChunkSize
 
 	maxTries = 5
 )
@@ -63,6 +64,7 @@ type driverParameters struct {
 	privateKey    []byte
 	client        *http.Client
 	rootDirectory string
+	chunkSize     int
 }
 
 func init() {
@@ -85,6 +87,7 @@ type driver struct {
 	email         string
 	privateKey    []byte
 	rootDirectory string
+	chunkSize     int
 }
 
 // FromParameters constructs a new Driver with a given parameters map
@@ -99,6 +102,31 @@ func FromParameters(parameters map[string]interface{}) (storagedriver.StorageDri
 	rootDirectory, ok := parameters["rootdirectory"]
 	if !ok {
 		rootDirectory = ""
+	}
+
+	chunkSize := defaultChunkSize
+	chunkSizeParam, ok := parameters["chunksize"]
+	if ok {
+		switch v := chunkSizeParam.(type) {
+		case string:
+			vv, err := strconv.Atoi(v)
+			if err != nil {
+				return nil, fmt.Errorf("chunksize parameter must be an integer, %v invalid", chunkSizeParam)
+			}
+			chunkSize = vv
+		case int, uint, int32, uint32, uint64, int64:
+			chunkSize = int(reflect.ValueOf(v).Convert(reflect.TypeOf(chunkSize)).Int())
+		default:
+			return nil, fmt.Errorf("invalid valud for chunksize: %#v", chunkSizeParam)
+		}
+
+		if chunkSize < minChunkSize {
+			return nil, fmt.Errorf("The chunksize %#v parameter should be a number that is larger than or equal to %d", chunkSize, minChunkSize)
+		}
+
+		if chunkSize%minChunkSize != 0 {
+			return nil, fmt.Errorf("chunksize should be a multiple of %d", minChunkSize)
+		}
 	}
 
 	var ts oauth2.TokenSource
@@ -119,7 +147,6 @@ func FromParameters(parameters map[string]interface{}) (storagedriver.StorageDri
 		if err != nil {
 			return nil, err
 		}
-
 	}
 
 	params := driverParameters{
@@ -128,6 +155,7 @@ func FromParameters(parameters map[string]interface{}) (storagedriver.StorageDri
 		email:         jwtConf.Email,
 		privateKey:    jwtConf.PrivateKey,
 		client:        oauth2.NewClient(context.Background(), ts),
+		chunkSize:     chunkSize,
 	}
 
 	return New(params)
@@ -139,12 +167,16 @@ func New(params driverParameters) (storagedriver.StorageDriver, error) {
 	if rootDirectory != "" {
 		rootDirectory += "/"
 	}
+	if params.chunkSize <= 0 || params.chunkSize%minChunkSize != 0 {
+		return nil, fmt.Errorf("Invalid chunksize: %d is not a positive multiple of %d", params.chunkSize, minChunkSize)
+	}
 	d := &driver{
 		bucket:        params.bucket,
 		rootDirectory: rootDirectory,
 		email:         params.email,
 		privateKey:    params.privateKey,
 		client:        params.client,
+		chunkSize:     params.chunkSize,
 	}
 
 	return &base.Base{
@@ -261,7 +293,7 @@ func (d *driver) Writer(context ctx.Context, path string, append bool) (storaged
 		client: d.client,
 		bucket: d.bucket,
 		name:   d.pathToKey(path),
-		buffer: make([]byte, maxChunkSize),
+		buffer: make([]byte, d.chunkSize),
 	}
 
 	if append {
